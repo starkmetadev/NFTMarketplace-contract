@@ -247,11 +247,17 @@ abstract contract Ownable is Context {
 }
 
 interface IMarketFactory {
+
+    struct UserInfo {
+        uint8 royaltyFee;
+        uint8 royaltyShare;
+        address user;
+        uint8 step;
+    }
+
     function _tokenIds() external view returns (uint256);
 
     function uri(uint256 tokenId) external view returns (string memory);
-
-    function setSize(uint256 _size) external;
 
     function setCollectionInfo(string memory _uri) external;
 
@@ -260,6 +266,12 @@ interface IMarketFactory {
     function transferOwnership(address newOwner) external;
 
     function initialize(address newOnwer) external;
+
+    function createItem(string memory _uri, uint8 _royaltyFee, address user) external;
+
+    function updateRoyaltyFee(uint tokenId, uint8 _royaltyFee, address user) external;
+
+    function userInfo(uint256 tokenId) external view returns(UserInfo memory);
 }
 
 interface IERC165 {
@@ -364,62 +376,22 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
-contract Detective {
-    function isERC721(address _contract) public view returns (bool) {
-        if (IERC165(_contract).supportsInterface(type(IERC721).interfaceId)) {
-            return true;
-        } else if (IERC165(_contract).supportsInterface(type(IERC1155).interfaceId)) {
-            return false;
-        } else {
-            return false;
-        }
-    }
-}
-
-interface IOwnerable {
-    function owner() external view returns(address);
-}
-
-interface IRedeemAndFee {
-    function accumulateTransactionFee(address user, uint royaltyFee, uint amount) external returns(uint transactionFee, uint, uint income);
-    function unCliamedReward(address user) external view returns(uint amount);
-    function claim(address user) external;
-    function getBlackList (address user) external view returns(bool);
-    function UnclassifiedList(address user) external view returns (bool);
-    function flatFee() external view returns (uint);
-    function AbleToViewALLPrivateMetadata(address user) external view returns(bool);
-}
-
-interface IFactory {
-    function decreaseTier0(uint tokenId, address user) external returns(uint8, uint256);
-    function initialTier0(uint tokenId) external;
-    function tier0TokenId() external view returns(uint256);
-}
-
 contract Main is Ownable, CloneFactory {
     using SafeERC20 for IERC20;
 
-    address public key;
     address public marketFactory;
-    address public redeemAndFee;
-    Detective detect;
-    address NATIVE = 0xd00ae08403B9bbb9124bB305C09058E32C39A48c;     // for test
+    address public tradeToken;     // for test
     address public treasury;
-
-    enum FNFT_TYPE {Fixed, StepBy, Increament}
+    uint256 public flatFee;
 
     struct PutOnSaleInfo {
         address maker;
         address collectionId;
         uint256 tokenId;
-        uint256 amount;
         uint8 royaltyFee;
         uint8 royaltyShare;
         address admin;
         uint256 price;
-        uint256 endPrice;
-        bool isFNFT;
-        FNFT_TYPE _type;
         AuctionInfo[] auctionInfo;
         bool isAlive;
     }
@@ -427,93 +399,28 @@ contract Main is Ownable, CloneFactory {
     struct AuctionInfo {
         address taker;
         uint256 price;
-        uint256 amount;
-    }
-
-    // struct FNFTBuyerInfo {
-    //     address buyer;
-    //     uint price;
-    //     uint amount;
-    // }
-
-    struct ManagerObj {
-        uint256 index;
-        bool exist;
-    }
-
-    enum EscrowStateType {
-        ES_OPEN,
-        ES_PROCESS,
-        ES_RELEASED,
-        ES_CLAIMED,
-        ES_DISPUTE_OPEN,
-        ES_DISPUTE_PROCESS,
-        ES_DISPUTE_SOLVED,
-        ES_DISPUTE_DECLINED
-    }
-
-    struct EscrowInfo {
-        bytes32 key;
-        uint amount;
-        uint price;
-        address buyer;
-        bool isFNFT;
-        EscrowStateType state;
-        uint256 createdAt;
     }
 
     mapping(address => address[]) public userCollectionInfo;
 
     mapping(bytes32 => PutOnSaleInfo) listInfo;
-    // mapping(bytes32 => FNFTBuyerInfo[10]) buyerInfo;
-    mapping(address => uint8) royaltyFeeForExternal;
-    // bytes32[] public hashList;
-
-    mapping(uint256 => EscrowInfo) public escrowList;
-    mapping(address => uint256[]) public userEscrowList;
-    uint256 public escrowIndex = 0;
-    uint256 public disputeDuration = 86400;
-
-    mapping (address => ManagerObj) private _manageAccess;
-    address[] private _marketManager;
-
-    enum ContractType {
-        ERC721,
-        ERC1155,
-        Unknown
-    }
 
     event CreateCollection(address indexed collectionId);
     event PutOnSaleEvent(
         bytes32 _key,
-        uint256 amount,
         uint8 royaltyFee,
         uint8 royaltyShare,
-        address admin,
-        bool isFNFT
+        address admin
     );
-    // event TradingNFT(uint256 amount, uint256 price, uint256 income, address maker, address taker, uint256 remain);
-    event TradingNFT(uint256 amount, uint256 price, uint256 income, address maker, address taker);
-    event RoyaltyHistory(uint256 royaltyFee, address admin, uint256 remain);
+    event TradingNFT(uint256 price, uint256 income, address maker, address taker);
+    event RoyaltyHistory(uint256 royaltyFee, address admin);
 
-    event EscrowCreated(uint256 id, bytes32 key, uint amount, uint price, address buyer, bool isFNFT);
-    event EscrowReleased(uint256 id);
-    event EscrowDisputeOpened(uint256 id);
-    event EscrowDisputeSolved(uint256 id);
-    event EscrowDisputeDeclined(uint256 id);
-
-    modifier isBlackList() {
-        require(false == IRedeemAndFee(redeemAndFee).getBlackList(msg.sender), "Main:blackLiser");
-        _;
+    constructor(address _token) {
+        tradeToken = _token;
     }
 
-    modifier onlyManager() {
-        require(msg.sender == owner() || _manageAccess[msg.sender].exist, "!manager");
-        _;
-    }
-
-    constructor() {
-        detect = new Detective();
+    function setTradeToken(address _token) external onlyOwner {
+        tradeToken = _token;
     }
 
     function _makeHash(
@@ -524,6 +431,10 @@ contract Main is Ownable, CloneFactory {
         return keccak256(abi.encodePacked(user, collectionId, tokenId));
     }
 
+    function setFlatFee(uint256 value) external onlyOwner {
+        flatFee = value;
+    }
+
     function setTreasury(address wallet) external onlyOwner {
         treasury = wallet;
     }
@@ -532,419 +443,142 @@ contract Main is Ownable, CloneFactory {
         marketFactory = factory;
     }
 
-    function setRedeemFeeContract(address _contract) external onlyOwner {
-        redeemAndFee = _contract;
-    }
-
-    function setKey(address _key) public onlyOwner {
-        key = _key;
-    }
-
-    function setDisputeDuration(uint256 _duration) public onlyManager {
-        disputeDuration = _duration;
-    }
-
-    function setManager(address usraddress, bool access) public onlyOwner {
-        if (access == true) {
-            if ( ! _manageAccess[usraddress].exist) {
-                uint256 newId = _marketManager.length;
-                _manageAccess[usraddress] = ManagerObj(newId, true);
-                _marketManager.push(usraddress);
-            }
-        }
-        else {
-            if (_manageAccess[usraddress].exist) {
-                address lastObj = _marketManager[_marketManager.length - 1];
-                _marketManager[_manageAccess[usraddress].index] = _marketManager[_manageAccess[lastObj].index];
-                _marketManager.pop();
-                delete _manageAccess[usraddress];
-            }
-        }
-    }
-
-    function creatCollection(string memory collectionMetadata, uint256 size) external payable isBlackList {
-        if (msg.sender != owner()) require(msg.value == IRedeemAndFee(redeemAndFee).flatFee(), "Main: insur flat fee");
+    function creatCollection(string memory collectionMetadata) external payable {
+        if (msg.sender != owner()) require(msg.value == flatFee, "Main: insur flat fee");
         address subFactory = createClone(marketFactory);
         userCollectionInfo[msg.sender].push(subFactory);
         IMarketFactory(subFactory).initialize(address(this));
-        IMarketFactory(subFactory).setSize(size);
         IMarketFactory(subFactory).setCollectionInfo(collectionMetadata);
-        IMarketFactory(subFactory).setMarketplace(address(this));
-        IMarketFactory(subFactory).transferOwnership(msg.sender);
-        payable (treasury).transfer(msg.value);
+        if (msg.value > 0) {
+            payable (treasury).transfer(msg.value);
+        }
         emit CreateCollection(subFactory);
+    }
+
+    function mint(address collectionId, string memory uri, uint8 royaltyFee) external payable {
+        require(msg.value == flatFee, "Main: insur flat fee");
+        if (collectionId == address(0)) collectionId = marketFactory;
+        IMarketFactory(collectionId).createItem(uri, royaltyFee, msg.sender);
+        if (msg.value > 0) {
+            payable (treasury).transfer(msg.value);
+        }
     }
 
     function putOnSale(
         address collectionId,
         uint256 tokenId,
-        uint256 amount,
-        uint256 price,
-        uint256 endPrice,
-        uint8 royaltyFee,
-        FNFT_TYPE _type,
-        bool setRoyaltyFee,
-        address user
-    ) external payable isBlackList {
-        if(user != msg.sender)
-            require(IRedeemAndFee(redeemAndFee).AbleToViewALLPrivateMetadata(msg.sender), "Main:no angel");
-        if(user != detectOwner(collectionId))
-            require(msg.value == IRedeemAndFee(redeemAndFee).flatFee(), "Main:wrong flatfee");
-        require(_detect(collectionId) != ContractType.Unknown, "Main:no NFT");
-        if(_type == FNFT_TYPE.StepBy)
-            require(endPrice >= price, "Main:IV endPrie");
-        if(_type == FNFT_TYPE.Increament)
-            require(endPrice <= 20 && endPrice >= 10, "Main:IV rate");
-        bytes32 _key = _makeHash(user, collectionId, tokenId);
+        uint256 price
+    ) external payable {
+        require(msg.value == flatFee, "Main:wrong flatfee");
+        bytes32 _key = _makeHash(msg.sender, collectionId, tokenId);
         if (listInfo[_key].maker == address(0) && listInfo[_key].collectionId == address(0)) {
             // hashList.push(_key);
-            listInfo[_key].maker = user;
+            listInfo[_key].maker = msg.sender;
             listInfo[_key].collectionId = collectionId;
             listInfo[_key].tokenId = tokenId;
         }
-        listInfo[_key].amount = amount;
-        listInfo[_key]._type = _type;
         listInfo[_key].price = price;
-        listInfo[_key].endPrice = endPrice;
         listInfo[_key].isAlive = true;
-        address collectionOwner = detectOwner(collectionId);
-
-        if(setRoyaltyFee) {
-            // if (_detect(collectionId) == ContractType.ERC721) 
-                require(collectionOwner == user, "Main:721-no owner");
-            // else if(_detect(collectionId) == ContractType.ERC1155)
-            //     require(IERC1155(collectionId).balanceOf(user, tokenId) >= amount, "Main:1155-no owner");
-            royaltyFeeForExternal[user] = royaltyFee;
-            // listInfo[_key].royaltyFee = royaltyFee;
-            // if(msg.sender == user)
-            //     listInfo[_key].royaltyShare = royaltyShare;
-            // else listInfo[_key].royaltyShare = 50;
-            // listInfo[_key].admin = msg.sender;
-        }
-
-        if(collectionOwner != address(0) && royaltyFeeForExternal[user] != 0) {         // But when the original contract owner will come and verify and set the roatlity fee...
-             listInfo[_key].admin = collectionOwner;
-             listInfo[_key].royaltyFee = royaltyFeeForExternal[user];
-        }
-        // _putonSaleFor1155(_key, collectionId, tokenId); //when not our own marketfactory or this is from external ERC721, default royaltyFee is 5%
-        listInfo[_key].royaltyFee = 5;
-        listInfo[_key].royaltyShare = 100;
-        if(msg.sender != user) {        // lazy mode
-            listInfo[_key].royaltyShare = 50;       // 50% will be left in this contract and the other %50 fee will go to the nft angel
-            listInfo[_key].admin = msg.sender;      // NFT angel
-        }   
+        listInfo[_key].royaltyFee = IMarketFactory(collectionId).userInfo(tokenId).royaltyFee;
+ 
         if(msg.value > 0)
             payable (treasury).transfer(msg.value);
+        IERC721(collectionId).safeTransferFrom(msg.sender, address(this), tokenId, "");
         emit PutOnSaleEvent(
             _key,
-            listInfo[_key].amount,
             listInfo[_key].royaltyFee,
             listInfo[_key].royaltyShare,
-            listInfo[_key].admin,
-            listInfo[_key].isFNFT
+            listInfo[_key].admin
         );
     }
 
-    // function _putonSaleFor1155(bytes32 _key, address collectionId, uint tokenId) private {
-    //     try IERC1155(collectionId).getUserInfo(tokenId) returns(uint8 _royaltyFee, uint8 _royaltyShare, uint8 nftType, uint, address admin) {
-    //         require(nftType != 2, "Main:sNFT no trade");
-    //         listInfo[_key].royaltyFee = _royaltyFee;
-    //         listInfo[_key].royaltyShare = _royaltyShare;
-    //         listInfo[_key].admin = admin;
-    //         if(nftType == 1) {
-    //             listInfo[_key].isFNFT = true;
-    //             IERC1155(collectionId).safeTransferFrom(msg.sender, address(this), tokenId, 1, "");
-    //         }
-    //     } catch {
-    //         listInfo[_key].royaltyFee = 5;
-    //         listInfo[_key].royaltyShare = 100;
-    //     }
-    // }
-
-    function cancelList (bytes32 _key) external isBlackList {
+    function cancelList (bytes32 _key) external {
         require(listInfo[_key].maker == msg.sender && listInfo[_key].isAlive, "Main:not owner");
         listInfo[_key].isAlive = false;
-        // if(listInfo[_key].isFNFT == true) {
-        //     require(buyerInfo[_key][9].buyer == address(0), "Main:saled");
-        //     IERC1155(listInfo[_key].collectionId).safeTransferFrom(address(this), msg.sender, listInfo[_key].tokenId, 1, "");
-        //     IFactory(listInfo[_key].collectionId).initialTier0(listInfo[_key].tokenId);
-        //     return;
-        // }
-    }
-
-    // function refundFromFNFT(bytes32 _key) external isBlackList {
-    //     require(listInfo[_key].isAlive == false && listInfo[_key].amount == 1 && listInfo[_key].isFNFT, "Main:cant refund");
-    //     uint price;
-    //     uint amount;
-    //     for(uint i = 0; i < 10; i++) {
-    //         if(buyerInfo[_key][i].buyer == msg.sender) {
-    //             price += buyerInfo[_key][i].price;
-    //             amount += buyerInfo[_key][i].amount;
-    //             delete  buyerInfo[_key][i];
-    //         }
-    //     }
-    //     require(price > 0, "Main:IV user");
-    //     IERC20(NATIVE).safeTransfer(msg.sender, price);
-    //     IERC1155(listInfo[_key].collectionId).safeTransferFrom(msg.sender, marketFactory, IFactory(marketFactory).tier0TokenId(), amount, "");
-    // }
-
-    // function withDrawFromFNFT(bytes32 _key) external isBlackList {
-    //     require(listInfo[_key].maker == msg.sender, "Main:no owner");
-    //     require(buyerInfo[_key][9].buyer != address(0), "Main:not saled");
-    //     uint price;
-    //     for (uint i = 0; i < 10; i++) {
-    //         price += buyerInfo[_key][i].price;
-    //     }
-    //     delete listInfo[_key];
-    //     delete buyerInfo[_key];
-    //     (,, uint income) = IRedeemAndFee(redeemAndFee).accumulateTransactionFee(msg.sender, 0, price);
-    //     IERC20(NATIVE).safeTransfer(msg.sender, income);
-    // }
-
-    function _detect(address _contract) public view returns (ContractType) {
-        try (detect).isERC721(_contract) returns (bool result) {
-            if (result) return ContractType.ERC721;
-            else return ContractType.ERC1155;
-        } catch {
-            return ContractType.Unknown;
-        }
-    }
-
-    function detectOwner(address _contract) public view returns (address) {
-        try IOwnerable(_contract).owner() returns (address owner) {
-            return owner;
-        } catch {
-            return address(0);
-        }
+        IERC721(listInfo[_key].collectionId).safeTransferFrom(address(this), msg.sender, listInfo[_key].tokenId, "");
     }
 
     function auction(
         bytes32 _key,
-        uint256 price,
-        uint256 amount
-    ) external isBlackList {
+        uint256 price
+    ) external {
         require(listInfo[_key].maker != msg.sender, "Main:IV user");
-        require(amount * price > 0, "Main:IV amount");
+        require(price > 0, "Main:IV price");
         require(listInfo[_key].isAlive, "Main:IV hash id");
-        require(listInfo[_key].amount >= amount, "Main:overflow");
 
         AuctionInfo[] storage auctionInfoList = listInfo[_key].auctionInfo;
         bool isExist;
         uint oldValue;
         for(uint i = 0; i < auctionInfoList.length; i++) {
             if(auctionInfoList[i].taker == msg.sender) {
-                oldValue = auctionInfoList[i].price * auctionInfoList[i].amount;
+                oldValue = auctionInfoList[i].price;
                 auctionInfoList[i].price = price;
-                auctionInfoList[i].amount = amount;
                 isExist = true;
                 break;
             }
         }
         if(!isExist) {
-            AuctionInfo memory auctionInfo = AuctionInfo({ taker: msg.sender, price: price, amount: amount });
+            AuctionInfo memory auctionInfo = AuctionInfo({ taker: msg.sender, price: price });
             listInfo[_key].auctionInfo.push(auctionInfo);
         }
 
-        if(amount * price > oldValue) {
-            IERC20(NATIVE).safeTransferFrom(msg.sender, address(this), amount * price - oldValue);
-        } else if (amount * price < oldValue) {
-            IERC20(NATIVE).safeTransfer(msg.sender, oldValue - amount * price);
+        if(price > oldValue) {
+            IERC20(tradeToken).safeTransferFrom(msg.sender, address(this), price - oldValue);
+        } else if (price < oldValue) {
+            IERC20(tradeToken).safeTransfer(msg.sender, oldValue - price);
         }
     }
 
-    function cancelAuction (bytes32 _key) external isBlackList {
+    function cancelAuction (bytes32 _key) external {
         AuctionInfo[] storage auctionInfoList = listInfo[_key].auctionInfo;
-        uint amount = 0;
         uint price = 0;
         for (uint i = 0; i < auctionInfoList.length; i++) {
             if( auctionInfoList[i].taker == msg.sender ) {
-                amount = auctionInfoList[i].amount;
                 price = auctionInfoList[i].price;
                 auctionInfoList[i] = auctionInfoList[auctionInfoList.length - 1];
                 auctionInfoList.pop();
                 break;
             }
         }
-        require(amount > 0, "Main:invalid user");
-        IERC20(NATIVE).safeTransfer(msg.sender, amount * price);
+        IERC20(tradeToken).safeTransfer(msg.sender, price);
     }
 
-    function buyNow(bytes32 _key, uint _amount) external isBlackList {
+    function buyNow(bytes32 _key) external {
         require(listInfo[_key].maker != address(this), "Main:unlisted");
         require(listInfo[_key].maker != msg.sender && listInfo[_key].isAlive, "Main:IV maker");
-        require(listInfo[_key].amount >= _amount, "Main:overflow");
-        _trading(_key, _amount, listInfo[_key].price, msg.sender, true, false);
+        _exchangeDefaultNFT(_key, listInfo[_key].price, msg.sender, true);
     }
 
-    function buyViaEscrow(bytes32 _key, uint _amount) external isBlackList {
-        require(listInfo[_key].maker != address(this), "Main:unlisted");
-        require(listInfo[_key].maker != msg.sender && listInfo[_key].isAlive, "Main:IV maker");
-        require(listInfo[_key].amount >= _amount, "Main:overflow");
-        _trading(_key, _amount, listInfo[_key].price, msg.sender, true, true);
-    }
-
-    function releaseEscrow(uint256 id) external isBlackList {
-        require(msg.sender == escrowList[id].buyer || msg.sender == owner() || _manageAccess[msg.sender].exist, "Main: IV buyer or manager");
-        escrowList[id].state = EscrowStateType.ES_RELEASED;
-    }
-
-    function claimEscrow(uint256 id) external isBlackList {
-        require(escrowList[id].state == EscrowStateType.ES_RELEASED, "Main: IV escrow is not released yet");
-        bytes32 _key = escrowList[id].key;
-        require(msg.sender == listInfo[_key].maker || msg.sender == owner() || _manageAccess[msg.sender].exist, "Main: IV maker or manager");
-        
-        address user = escrowList[id].buyer;
-        uint amount = escrowList[id].amount;
-        uint price = escrowList[id].price;
-        (,uint royaltyAmount, uint income) = IRedeemAndFee(redeemAndFee).accumulateTransactionFee(user, listInfo[_key].royaltyFee, amount * price);
-        IERC20(NATIVE).safeTransfer(listInfo[_key].maker, income);
-        if(listInfo[_key].admin != address(0)  && 100 > listInfo[_key].royaltyShare) {
-            IERC20(NATIVE).safeTransfer(listInfo[_key].admin, royaltyAmount * (100 - listInfo[_key].royaltyShare) / 100);
-        }
-        IERC20(NATIVE).safeTransfer(treasury, royaltyAmount * listInfo[_key].royaltyShare / 100);
-        // emit TradingNFT(amount, price, income, listInfo[_key].maker, user, listInfo[_key].amount);
-        emit TradingNFT(amount, price, income, listInfo[_key].maker, user);
-        emit RoyaltyHistory(royaltyAmount, listInfo[_key].admin, listInfo[_key].amount);
-        escrowList[id].state = EscrowStateType.ES_CLAIMED;
-    }
-
-    function openDisputEscrow(uint256 id) external isBlackList {
-        require(msg.sender == escrowList[id].buyer, "Main: IV buyer");
-        require(escrowList[id].createdAt + disputeDuration <= block.timestamp, "Main: IV dispute is late");
-        escrowList[id].state = EscrowStateType.ES_DISPUTE_OPEN;
-    }
-
-    function declineDisputEscrow(uint256 id) external onlyManager {
-        require(msg.sender == escrowList[id].buyer, "Main: IV buyer");
-        escrowList[id].state = EscrowStateType.ES_DISPUTE_DECLINED;
-    }
-
-    function solveDisputEscrow(uint256 id, uint256 percent, bool refundNFT) external onlyManager {
-        require(msg.sender == escrowList[id].buyer, "Main: IV buyer");
-        bytes32 _key = escrowList[id].key;
-        address user = escrowList[id].buyer;
-        uint amount = escrowList[id].amount;
-        uint price = escrowList[id].price;
-        bool isFNFT = escrowList[id].isFNFT;
-        uint totalAmount = amount * price;
-        uint refundAmout = totalAmount * percent / 10000;
-        uint releaseAmout = totalAmount - refundAmout;
-        (,uint royaltyAmount, uint income) = IRedeemAndFee(redeemAndFee).accumulateTransactionFee(user, listInfo[_key].royaltyFee, releaseAmout);
-        IERC20(NATIVE).safeTransfer(listInfo[_key].maker, income);
-        if(listInfo[_key].admin != address(0)  && 100 > listInfo[_key].royaltyShare) {
-            IERC20(NATIVE).safeTransfer(listInfo[_key].admin, royaltyAmount * (100 - listInfo[_key].royaltyShare) / 100);
-        }
-        IERC20(NATIVE).safeTransfer(treasury, royaltyAmount * listInfo[_key].royaltyShare / 100);
-        IERC20(NATIVE).safeTransfer(user, refundAmout);
-
-        if ( refundNFT ) {
-            if( ! isFNFT) {
-                if(_detect(listInfo[_key].collectionId) == ContractType.ERC721) {
-                    IERC721(listInfo[_key].collectionId).safeTransferFrom(user, listInfo[_key].maker, listInfo[_key].tokenId);
-                } else if (_detect(listInfo[_key].collectionId) == ContractType.ERC1155) {
-                    IERC1155(listInfo[_key].collectionId).safeTransferFrom(user, listInfo[_key].maker, listInfo[_key].tokenId, amount, "");
-                }
-            }
-        }
-
-        escrowList[id].state = EscrowStateType.ES_DISPUTE_SOLVED;
-    }
-
-    function _trading (bytes32 _key, uint _amount, uint _price, address user, bool isBuyNow, bool isEscrow) private {
-        if(_detect(listInfo[_key].collectionId) == ContractType.ERC721) {
-            require(IERC721(listInfo[_key].collectionId).ownerOf(listInfo[_key].tokenId) == listInfo[_key].maker, "Main:no721 owner");
-            _exchangeDefaultNFT(_key, _amount, _price, false, user, isBuyNow, isEscrow);
-        } 
-        // else if (_detect(listInfo[_key].collectionId) == ContractType.ERC1155) {
-        //     try IERC1155(listInfo[_key].collectionId).getUserInfo(listInfo[_key].tokenId) returns(uint8, uint8, uint8 nftType, uint, address) {
-        //         require(nftType != 2, "Main:cant trade");
-        //         if(nftType == 0 || nftType == 3 || nftType == 4) {      // default NFT or Tier0 NFT or PRIVATE NFT
-        //             _amount = _dealwithOverflowAmount(_key, _amount, _price, user, isBuyNow, isEscrow);
-        //         } else if (nftType == 1) { // FNFT
-        //             _tradingFNFT(_key, user);
-        //             return;
-        //         }
-        //     } catch {
-        //         _amount = _dealwithOverflowAmount(_key, _amount, _price, user, isBuyNow, isEscrow);
-        //     }
-        // }
-
-        listInfo[_key].amount -= _amount;
-        // if(listInfo[_key].amount == 0) {
-        //     listInfo[_key].maker = address(0);
-        //     listInfo[_key].collectionId = address(0);
-        //     listInfo[_key].tokenId = 0;
-        // }
-    }
-
-    // function _dealwithOverflowAmount(bytes32 _key, uint _amount, uint _price, address user, bool isBuyNow, bool isEscrow) private returns(uint256) {
-    //     uint balance = IERC1155(listInfo[_key].collectionId).balanceOf(listInfo[_key].maker, listInfo[_key].tokenId);
-    //     if(IERC1155(listInfo[_key].collectionId).balanceOf(listInfo[_key].maker, listInfo[_key].tokenId) < _amount) {
-    //         _amount = balance;
-    //         listInfo[_key].amount = _amount;
-    //     }
-    //     _exchangeDefaultNFT(_key, _amount, _price, false, user, isBuyNow, isEscrow);
-    //     return _amount;
-    // }
-
-    // function _tradingFNFT(bytes32 _key, address user) private {
-    //     (uint8 step, uint amount) = IFactory(marketFactory).decreaseTier0(listInfo[_key].tokenId, user);
-    //     uint price;
-    //     if (listInfo[_key]._type == FNFT_TYPE.Fixed) price = listInfo[_key].price;
-    //     else if (listInfo[_key]._type == FNFT_TYPE.StepBy) {
-    //         price = (listInfo[_key].endPrice - listInfo[_key].price) * (step - 1) / 10 + listInfo[_key].price;
-    //     } else if (listInfo[_key]._type == FNFT_TYPE.Increament) {
-    //         price = listInfo[_key].price * (100 + listInfo[_key].endPrice) ** (step - 1) / 100 ** (step - 1);
-    //     }
-    //     buyerInfo[_key][step-1].buyer = user;
-    //     buyerInfo[_key][step-1].price = price;
-    //     buyerInfo[_key][step-1].amount = amount;
-    //     IERC20(NATIVE).safeTransferFrom(user, address(this), price);
-    // }
-
-    function _exchangeDefaultNFT(bytes32 _key, uint amount, uint price, bool isFNFT, address user, bool isBuyNow, bool isEscrow) private {
-        require(amount * price > 0, "Main:insuf 1155");
+    function _exchangeDefaultNFT(bytes32 _key, uint price, address user, bool isBuyNow) private {
+        require(price > 0, "Main:insuf 721");
         if(isBuyNow)
-            IERC20(NATIVE).safeTransferFrom(user, address(this), amount * price);
+            IERC20(tradeToken).safeTransferFrom(user, address(this), price);
         
-        (,uint royaltyAmount, uint income) = IRedeemAndFee(redeemAndFee).accumulateTransactionFee(user, listInfo[_key].royaltyFee, amount * price);
+        uint256 royaltyAmount = listInfo[_key].royaltyFee * price / 100;
+        uint256 income = price - royaltyAmount;
+        listInfo[_key].isAlive = false;
 
-        if (isEscrow) {
-            escrowList[escrowIndex] = EscrowInfo(_key, amount, price, user, isFNFT, EscrowStateType.ES_OPEN, block.timestamp);
-            userEscrowList[user].push(escrowIndex);
-            emit EscrowCreated(escrowIndex, _key, amount, price, user, isFNFT);
-            emit TradingNFT(amount, price, income, listInfo[_key].maker, user);
-            emit RoyaltyHistory(royaltyAmount, listInfo[_key].admin, listInfo[_key].amount);
-            escrowIndex = escrowIndex + 1;
+        IERC20(tradeToken).safeTransfer(listInfo[_key].maker, income);
+        uint256 shareAmount;
+        if(listInfo[_key].admin != address(0)  && 100 > listInfo[_key].royaltyShare) {
+            shareAmount = royaltyAmount * (100 - listInfo[_key].royaltyShare) / 100;
+            IERC20(tradeToken).safeTransfer(listInfo[_key].admin, shareAmount);
         }
-        else {
-            IERC20(NATIVE).safeTransfer(listInfo[_key].maker, income);
-            if(listInfo[_key].admin != address(0)  && 100 > listInfo[_key].royaltyShare) {
-                IERC20(NATIVE).safeTransfer(listInfo[_key].admin, royaltyAmount * (100 - listInfo[_key].royaltyShare) / 100);
-            }
-            IERC20(NATIVE).safeTransfer(treasury, royaltyAmount * listInfo[_key].royaltyShare / 100);
-            // emit TradingNFT(amount, price, income, listInfo[_key].maker, user, listInfo[_key].amount);
-            emit TradingNFT(amount, price, income, listInfo[_key].maker, user);
-            emit RoyaltyHistory(royaltyAmount, listInfo[_key].admin, listInfo[_key].amount);
-        }
-        if(!isFNFT) {
-            if(_detect(listInfo[_key].collectionId) == ContractType.ERC721) {
-                IERC721(listInfo[_key].collectionId).safeTransferFrom(listInfo[_key].maker, user, listInfo[_key].tokenId);
-            } else if (_detect(listInfo[_key].collectionId) == ContractType.ERC1155) {
-                IERC1155(listInfo[_key].collectionId).safeTransferFrom(listInfo[_key].maker, user, listInfo[_key].tokenId, amount, "");
-            }
-        }
+        IERC20(tradeToken).safeTransfer(treasury, royaltyAmount - shareAmount);
+        emit TradingNFT(price, income, listInfo[_key].maker, user);
+        emit RoyaltyHistory(royaltyAmount, listInfo[_key].admin);
+
+        IERC721(listInfo[_key].collectionId).safeTransferFrom(address(this), user, listInfo[_key].tokenId);
     }
 
-    function makeOffer(bytes32 _key, address taker) external isBlackList {
+    function makeOffer(bytes32 _key, address taker) external {
         require(listInfo[_key].isAlive && msg.sender == listInfo[_key].maker, "Main:not maker");
-        bool isExist = false;
+        bool isExist;
         AuctionInfo[] storage auctionInfoList = listInfo[_key].auctionInfo;
         for(uint i = 0; i < auctionInfoList.length; i++) {
             if(auctionInfoList[i].taker == taker) {
-                uint _amount = auctionInfoList[i].amount;
                 uint _price = auctionInfoList[i].price;
-                _trading(_key, _amount, _price, taker, false, false);
+                _exchangeDefaultNFT(_key, _price, taker, false);
                 auctionInfoList[i] = auctionInfoList[auctionInfoList.length - 1];
                 auctionInfoList.pop();
                 isExist = true;
@@ -954,31 +588,13 @@ contract Main is Ownable, CloneFactory {
         require(isExist, "Main:no user");
     }
 
-    function claim() external isBlackList {
-        uint reward = IRedeemAndFee(redeemAndFee).unCliamedReward(msg.sender);
-        require(reward > 0, "Main:no reward");
-        IRedeemAndFee(redeemAndFee).claim(msg.sender);
-        IERC20(NATIVE).safeTransfer(msg.sender, reward);
-    }
-
-    function UnClassifiedList(address user) private view returns(bool) {
-        return IRedeemAndFee(redeemAndFee).UnclassifiedList(user);
-    }
-
     function ListInfo(bytes32 _key) external view returns(PutOnSaleInfo memory info, AuctionInfo[] memory auctionInfo, bool isValid) {
-        if(UnClassifiedList(listInfo[_key].maker)) {
-            return (info, auctionInfo, false);
-        }
         auctionInfo = new AuctionInfo[](listInfo[_key].auctionInfo.length);
         auctionInfo = listInfo[_key].auctionInfo;
         return (listInfo[_key], auctionInfo, true);
     }
 
-    // function BuyerInfo(bytes32 _key) external view returns (FNFTBuyerInfo[10] memory info) {
-    //     return buyerInfo[_key];
-    // }
-
-    function withdrawTokens(address coin, address user, uint amount) external onlyOwner {
+    function recoverTokens(address coin, address user, uint amount) external onlyOwner {
         IERC20(coin).safeTransfer(user, amount);
     }
 

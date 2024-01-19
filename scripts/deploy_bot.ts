@@ -1,13 +1,13 @@
 /* eslint-disable prettier/prettier */
 import '@nomiclabs/hardhat-ethers'
-import { ethers } from 'hardhat'
+import hre, { ethers } from 'hardhat'
 
 async function main() {
 
-  const Redeem = await ethers.getContractFactory('RedeemAndFee')
-  const RedeemContract = await Redeem.deploy()
+  // const Redeem = await ethers.getContractFactory('RedeemAndFee')
+  // const RedeemContract = await Redeem.deploy()
 
-  console.log("Redeem Contract: ", RedeemContract.address)
+  // console.log("Redeem Contract: ", RedeemContract.address)
   
   const factory = await ethers.getContractFactory('MarketFactory')
 
@@ -18,47 +18,33 @@ async function main() {
   console.log('MarketFactory address', contract.address)
 
   const Main = await ethers.getContractFactory('Main')
-  const mainContract = await Main.deploy()
+  const mainContract = await Main.deploy("0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd")
 
-  const ServiceMarketF = await ethers.getContractFactory('ServiceMarket');
-  const ServiceMarket = await ServiceMarketF.deploy();
+  // const ServiceMarketF = await ethers.getContractFactory('ServiceMarket');
+  // const ServiceMarket = await ServiceMarketF.deploy();
 
-  const GiftF = await ethers.getContractFactory('Gift')
-  const Gift = await GiftF.deploy();
+  // const GiftF = await ethers.getContractFactory('Gift')
+  // const Gift = await GiftF.deploy();
 
   console.log('Main address: ', mainContract.address)
-  console.log("service address", ServiceMarket.address)
-  console.log("Gift Address", Gift.address)
+  // console.log("service address", ServiceMarket.address)
+  // console.log("Gift Address", Gift.address)
 
+  let tx = await mainContract.setMarketFactory(contract.address)
+  await tx.wait()
+  tx = await mainContract.setTreasury("0x79cB71aBC88ddB5329D37b42372E7102B981Be2C")
 
-  let tx = await contract.initialize("0xf827c3E5fD68e78aa092245D442398E12988901C")
-  await tx.wait()
-  console.log("===0===")
-
-  tx = await contract.setMarketplace(mainContract.address)
-  console.log("==1======")
-  await tx.wait()
-  tx = await RedeemContract.setFlatFee('1000000000000000')
-  console.log("==2======")
-  await tx.wait()
-  tx = await mainContract.setMarketFactory(contract.address)
-  await tx.wait()
-  console.log("==3======")
-  tx = await mainContract.setRedeemFeeContract(RedeemContract.address)
-  await tx.wait()
-  console.log("==4======")
-  tx = await ServiceMarket.setRedeemFeeContract(RedeemContract.address)
-  await tx.wait()
-
-  console.log("=======5==========")
-  tx = await Gift.setMarketPlace(mainContract.address)
-  await tx.wait();
-  console.log("=======6==========")
-  tx = await RedeemContract.setMarketPlace(mainContract.address)
-  await tx.wait();
 
   // tx = await mainContract.setAbleToViewALLPrivateMetadata("0xFaF6471d8E5e109Ad13435fc71E0776629C04858", true)
   // await tx.wait()
+  await hre.run('verify:verify', {
+    address: contract.address,
+    constructorArguments: [],
+  })
+  await hre.run('verify:verify', {
+    address: mainContract.address,
+    constructorArguments: ["0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd"],
+  })
 }
 
 main()
