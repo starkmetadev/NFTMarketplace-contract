@@ -272,6 +272,8 @@ interface IMarketFactory {
     function updateRoyaltyFee(uint tokenId, uint8 _royaltyFee, address user) external;
 
     function userInfo(uint256 tokenId) external view returns(UserInfo memory);
+    event CreatItem(address indexed user, uint256 indexed tokenId, uint8 royaltyFee);
+    event UpdateRoyaltyFee(address indexed user, uint256 indexed tokenId, uint8 royaltyFee);
 }
 
 interface IERC165 {
