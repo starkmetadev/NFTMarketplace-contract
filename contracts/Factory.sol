@@ -74,7 +74,6 @@ contract MarketFactory is ERC721 {
         userInfo[_tokenIds.current()].royaltyShare = 50;
         userInfo[_tokenIds.current()].user = user;
 
-
         emit CreatItem(user, _tokenIds.current(), _royaltyFee);
         return _tokenIds.current();
     }
